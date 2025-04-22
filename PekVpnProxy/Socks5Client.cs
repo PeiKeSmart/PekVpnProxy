@@ -87,13 +87,45 @@ namespace PekVpnProxy
         /// 接收数据
         /// </summary>
         /// <param name="buffer">接收缓冲区</param>
+        /// <param name="timeout">超时时间（毫秒），默认30秒</param>
         /// <returns>接收到的字节数</returns>
-        public async Task<int> ReceiveAsync(byte[] buffer)
+        public async Task<int> ReceiveAsync(byte[] buffer, int timeout = 30000)
         {
             if (_stream == null || !_tcpClient!.Connected)
                 throw new InvalidOperationException("未连接到服务器");
 
-            return await _stream.ReadAsync(buffer);
+            // 设置读取超时
+            _tcpClient.ReceiveTimeout = timeout;
+
+            try
+            {
+                // 使用超时任务
+                var readTask = _stream.ReadAsync(buffer);
+
+                // 等待读取完成或超时
+                if (await Task.WhenAny(readTask, Task.Delay(timeout)) == readTask)
+                {
+                    // 读取成功
+                    return await readTask;
+                }
+                else
+                {
+                    // 超时
+                    Console.WriteLine($"接收数据超时 ({timeout} 毫秒)");
+                    return 0;
+                }
+            }
+            catch (IOException ex)
+            {
+                // 连接已关闭
+                Console.WriteLine($"接收数据时连接关闭: {ex.Message}");
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"接收数据错误: {ex.Message}");
+                return 0;
+            }
         }
 
         /// <summary>

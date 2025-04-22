@@ -5,3 +5,7 @@
 /.vs
 /PekVpnProxy/obj
 /PekVpnProxy/bin/Debug/net9.0
+/SharpTun/SharpTun/bin/Debug/net6.0
+/SharpTun/SharpTun/obj
+/SharpTun/SharpTunTest/bin/Debug/net6.0
+/SharpTun/SharpTunTest/obj
