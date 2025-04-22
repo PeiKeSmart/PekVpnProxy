@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "PekVpnProxy": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
