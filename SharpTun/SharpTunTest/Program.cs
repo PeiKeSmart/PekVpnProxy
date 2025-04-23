@@ -16,27 +16,43 @@ namespace SharpTunTest
             Socks5Proxy       // SOCKS5代理转发
         }
 
-        // SOCKS5代理配置
-        private static string _socks5Host = "127.0.0.1";
-        private static int _socks5Port = 1080;
-        private static string? _socks5Username = null;
-        private static string? _socks5Password = null;
+        // 代理类型
+        enum ProxyType
+        {
+            Socks5,      // SOCKS5代理
+            Http,        // HTTP代理
+            Https        // HTTPS代理
+        }
+
+        // 代理配置
+        private static ProxyType _proxyType = ProxyType.Socks5;
+        private static string _proxyHost = "127.0.0.1";
+        private static int _proxyPort = 1080;
+        private static string? _proxyUsername = null;
+        private static string? _proxyPassword = null;
         private static bool _handleIcmp = false;  // 是否处理ICMP流量
+
+        // 排除的IP地址列表，这些地址的流量不会通过虚拟适配器
+        private static List<string> _excludedIPs = new List<string>();
 
         // 连接跟踪表
         private static Dictionary<string, Socket> _connectionTable = new Dictionary<string, Socket>();
 
+        // 路由跟踪列表，用于清理
+        private static List<(string destination, string mask)> _addedRoutes = new List<(string, string)>();
+        private static string? _configuredAdapterName;
+
         static void Main(string[] args)
         {
-            Console.WriteLine("SharpTun Test Program");
+            Console.WriteLine("SharpTun 测试程序");
             Console.WriteLine("=====================");
-            Console.WriteLine("This program will create a virtual network adapter and capture packets.");
-            Console.WriteLine("You need to run this program as administrator.");
+            Console.WriteLine("本程序将创建虚拟网络适配器并捕获数据包。");
+            Console.WriteLine("您需要以管理员身份运行此程序。");
             Console.WriteLine();
-            Console.WriteLine("Select test mode:");
-            Console.WriteLine("1. Capture Only - Just capture and display network packets");
-            Console.WriteLine("2. SOCKS5 Proxy - Capture packets and forward through SOCKS5 proxy");
-            Console.Write("Enter your choice (1-2): ");
+            Console.WriteLine("选择测试模式：");
+            Console.WriteLine("1. 仅捕获 - 只捕获并显示网络数据包");
+            Console.WriteLine("2. 代理转发 - 捕获数据包并通过代理转发（支持SOCKS5/HTTP/HTTPS）");
+            Console.Write("请输入您的选择 (1-2): ");
 
             TestMode mode = TestMode.CaptureOnly;
             string? choice = Console.ReadLine();
@@ -53,55 +69,196 @@ namespace SharpTunTest
 
             try
             {
-                Console.WriteLine($"Creating adapter '{adapterName}' with GUID {adapterGuid}...");
+                Console.WriteLine($"正在创建适配器 '{adapterName}' ，GUID为 {adapterGuid}...");
 
                 // 创建虚拟网络适配器
                 using (var adapter = ManagedWintunAdapter.Create(adapterName, tunnelType, adapterGuid))
                 {
-                    Console.WriteLine("Adapter created successfully.");
+                    Console.WriteLine("适配器创建成功。");
 
                     // 获取适配器的LUID
                     var luid = adapter.GetLuid();
-                    Console.WriteLine($"Adapter LUID: {luid.LowPart}, {luid.HighPart}");
+                    Console.WriteLine($"适配器 LUID: {luid.LowPart}, {luid.HighPart}");
 
                     // 启动会话
-                    Console.WriteLine("Starting session...");
+                    Console.WriteLine("正在启动会话...");
                     using (var session = adapter.Start(0x400000))
                     {
-                        Console.WriteLine("Session started successfully.");
+                        Console.WriteLine("会话启动成功。");
                         Console.WriteLine();
-                        Console.WriteLine("Now we need to configure the adapter with an IP address.");
-                        Console.WriteLine("Please open another command prompt as administrator and run:");
-                        Console.WriteLine($"netsh interface ip set address name=\"{adapterName}\" static 192.168.56.1 255.255.255.0");
+                        Console.WriteLine("现在需要配置适配器的IP地址并设置路由。");
+
+                        // 配置IP地址
+                        string adapterIP = "192.168.56.1";
+                        string subnetMask = "255.255.255.0";
+                        Console.WriteLine($"正在配置适配器 '{adapterName}' 的IP地址 {adapterIP}...");
+
+                        bool configSuccess = ConfigureAdapterIP(adapterName, adapterIP, subnetMask);
+                        if (!configSuccess)
+                        {
+                            Console.WriteLine("配置适配器IP失败。请手动运行以下命令：");
+                            Console.WriteLine($"netsh interface ip set address name=\"{adapterName}\" static {adapterIP} {subnetMask}");
+                            Console.WriteLine("按任意键继续...");
+                            Console.ReadKey();
+                        }
+                        else
+                        {
+                            Console.WriteLine("适配器IP配置成功。");
+                            _configuredAdapterName = adapterName; // 记录已配置的适配器名称，用于清理
+                        }
 
                         // 如果是SOCKS5代理模式，需要设置路由
                         if (mode == TestMode.Socks5Proxy)
                         {
                             Console.WriteLine();
-                            Console.WriteLine("For SOCKS5 proxy mode, you need to add routes to direct traffic through the adapter.");
-                            Console.WriteLine("To route ALL internet traffic through the adapter, run:");
-                            Console.WriteLine($"route add 0.0.0.0 mask 0.0.0.0 192.168.56.1");
-                            Console.WriteLine();
-                            Console.WriteLine("Or for testing with specific destinations only:");
-                            Console.WriteLine($"route add 8.8.8.8 mask 255.255.255.255 192.168.56.1");
-                            Console.WriteLine($"route add 1.1.1.1 mask 255.255.255.255 192.168.56.1");
-                            Console.WriteLine();
-                            Console.WriteLine("IMPORTANT: Make sure your SOCKS5 proxy server is accessible directly,");
-                            Console.WriteLine("not through the virtual adapter, or you'll create a routing loop!");
+                            Console.WriteLine("正在设置Socks5代理模式的路由...");
+
+                            // 获取SOCKS5代理服务器的IP地址
+                            IPAddress proxyIP = GetProxyServerIP(_socks5Host);
+                            string proxyIPStr = proxyIP.ToString();
+
+                            // 获取默认网关
+                            IPAddress? defaultGateway = GetDefaultGateway();
+
+                            if (defaultGateway != null)
+                            {
+                                string gatewayStr = defaultGateway.ToString();
+
+                                // 1. 添加代理服务器的直接路由，避免路由循环
+                                Console.WriteLine($"正在添加代理服务器 {proxyIPStr} 的直接路由，通过默认网关 {gatewayStr}...");
+                                bool proxyRouteSuccess = AddRoute(proxyIPStr, "255.255.255.255", gatewayStr);
+
+                                // 如果代理服务器是本地地址，添加回环地址的路由
+                                if (proxyIPStr == "127.0.0.1" || proxyIPStr.StartsWith("192.168.") || proxyIPStr.StartsWith("10.") || proxyIPStr.StartsWith("172."))
+                                {
+                                    Console.WriteLine("检测到本地代理服务器，添加回环网络路由...");
+                                    // 添加回环网络的路由
+                                    bool loopbackRouteSuccess = AddRoute("127.0.0.0", "255.0.0.0", gatewayStr);
+                                    if (!loopbackRouteSuccess)
+                                    {
+                                        Console.WriteLine("添加回环网络路由失败。请手动运行以下命令：");
+                                        Console.WriteLine($"route add 127.0.0.0 mask 255.0.0.0 {gatewayStr}");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("回环网络路由添加成功。");
+                                    }
+
+                                    // 如果是其他本地网络，也添加对应的路由
+                                    if (proxyIPStr.StartsWith("192.168."))
+                                    {
+                                        bool localRouteSuccess = AddRoute("192.168.0.0", "255.255.0.0", gatewayStr);
+                                        if (localRouteSuccess)
+                                            Console.WriteLine("本地网络 (192.168.0.0/16) 路由添加成功。");
+                                    }
+                                    else if (proxyIPStr.StartsWith("10."))
+                                    {
+                                        bool localRouteSuccess = AddRoute("10.0.0.0", "255.0.0.0", gatewayStr);
+                                        if (localRouteSuccess)
+                                            Console.WriteLine("本地网络 (10.0.0.0/8) 路由添加成功。");
+                                    }
+                                    else if (proxyIPStr.StartsWith("172."))
+                                    {
+                                        bool localRouteSuccess = AddRoute("172.16.0.0", "255.240.0.0", gatewayStr);
+                                        if (localRouteSuccess)
+                                            Console.WriteLine("本地网络 (172.16.0.0/12) 路由添加成功。");
+                                    }
+                                }
+
+                                if (!proxyRouteSuccess)
+                                {
+                                    Console.WriteLine("添加代理路由失败。请手动运行以下命令：");
+                                    Console.WriteLine($"route add {proxyIPStr} mask 255.255.255.255 {gatewayStr}");
+                                }
+                                else
+                                {
+                                    Console.WriteLine("代理路由添加成功。");
+                                }
+
+                                // 2. 询问用户是否要路由所有流量或仅特定目标
+                                Console.WriteLine();
+                                Console.WriteLine("是否要将所有互联网流量通过适配器路由？ (y/n): ");
+                                string? routeAllChoice = Console.ReadLine()?.ToLower();
+
+                                if (routeAllChoice == "y" || routeAllChoice == "yes")
+                                {
+                                    // 路由所有流量
+                                    Console.WriteLine("正在添加所有互联网流量的路由...");
+                                    bool allRouteSuccess = AddRoute("0.0.0.0", "0.0.0.0", adapterIP);
+
+                                    if (!allRouteSuccess)
+                                    {
+                                        Console.WriteLine("添加全局路由失败。请手动运行以下命令：");
+                                        Console.WriteLine($"route add 0.0.0.0 mask 0.0.0.0 {adapterIP}");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("全局路由添加成功。");
+
+                                        // 为排除的IP添加特定路由
+                                        if (_excludedIPs.Count > 0)
+                                        {
+                                            Console.WriteLine("正在为排除的IP地址添加直接路由...");
+                                            foreach (string excludedIP in _excludedIPs)
+                                            {
+                                                // 确保排除的IP流量通过默认网关，而不是虚拟适配器
+                                                bool excludeRouteSuccess = AddRoute(excludedIP, "255.255.255.255", gatewayStr);
+                                                if (excludeRouteSuccess)
+                                                {
+                                                    Console.WriteLine($"成功添加排除路由: {excludedIP}");
+                                                }
+                                                else
+                                                {
+                                                    Console.WriteLine($"添加排除路由失败: {excludedIP}");
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    // 仅路由特定目标
+                                    Console.WriteLine("正在添加特定目标的路由 (8.8.8.8 和 1.1.1.1)...");
+
+                                    bool dns1RouteSuccess = AddRoute("8.8.8.8", "255.255.255.255", adapterIP);
+                                    bool dns2RouteSuccess = AddRoute("1.1.1.1", "255.255.255.255", adapterIP);
+
+                                    if (!dns1RouteSuccess || !dns2RouteSuccess)
+                                    {
+                                        Console.WriteLine("添加某些特定路由失败。请手动运行以下命令：");
+                                        if (!dns1RouteSuccess) Console.WriteLine($"route add 8.8.8.8 mask 255.255.255.255 {adapterIP}");
+                                        if (!dns2RouteSuccess) Console.WriteLine($"route add 1.1.1.1 mask 255.255.255.255 {adapterIP}");
+                                    }
+                                    else
+                                    {
+                                        Console.WriteLine("特定路由添加成功。");
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                Console.WriteLine("无法检测到默认网关。请手动配置路由：");
+                                Console.WriteLine($"1. route add {proxyIPStr} mask 255.255.255.255 YOUR_DEFAULT_GATEWAY_IP");
+                                Console.WriteLine($"2. route add 0.0.0.0 mask 0.0.0.0 {adapterIP}");
+                            }
                         }
 
                         Console.WriteLine();
-                        Console.WriteLine("After configuring, try to ping 8.8.8.8 to generate some traffic.");
-                        Console.WriteLine("Press any key to start capturing packets...");
+                        Console.WriteLine("网络配置完成。尝试 ping 8.8.8.8 来生成一些流量。");
+                        Console.WriteLine("按任意键开始捕获数据包...");
                         Console.ReadKey();
 
                         // 开始捕获数据包
-                        Console.WriteLine("Starting packet capture. Press Ctrl+C to stop.");
+                        Console.WriteLine("正在开始捕获数据包。按 Ctrl+C 停止。");
 
                         // 注册Ctrl+C处理程序
                         Console.CancelKeyPress += (sender, e) => {
                             e.Cancel = true;
+                            Console.WriteLine("正在清理...");
                             CloseAllConnections();
+                            CleanupRoutes();
+                            ResetAdapterIP();
+                            Console.WriteLine("清理完成。");
                             Environment.Exit(0);
                         };
 
@@ -124,7 +281,7 @@ namespace SharpTunTest
                             }
                             catch (Exception ex)
                             {
-                                Console.WriteLine($"Error receiving packet: {ex.Message}");
+                                Console.WriteLine($"接收数据包错误: {ex.Message}");
                             }
                         }
                     }
@@ -132,67 +289,123 @@ namespace SharpTunTest
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine($"错误: {ex.Message}");
                 Console.WriteLine(ex.StackTrace);
             }
 
-            Console.WriteLine("Press any key to exit...");
+            Console.WriteLine("按任意键退出...");
             Console.ReadKey();
         }
 
         /// <summary>
-        /// 配置SOCKS5代理设置
+        /// 配置代理设置（支持SOCKS5/HTTP/HTTPS）
         /// </summary>
         static void ConfigureSocks5Proxy()
         {
-            Console.WriteLine("\nSOCKS5 Proxy Configuration");
+            Console.WriteLine("\n代理配置");
             Console.WriteLine("-------------------------");
 
-            Console.Write("Proxy Host (default: 127.0.0.1): ");
+            // 选择代理类型
+            Console.WriteLine("选择代理类型:");
+            Console.WriteLine("1. SOCKS5代理");
+            Console.WriteLine("2. HTTP代理");
+            Console.WriteLine("3. HTTPS代理");
+            Console.Write("请输入您的选择 (1-3, 默认: 1): ");
+
+            string? proxyTypeChoice = Console.ReadLine();
+            switch (proxyTypeChoice)
+            {
+                case "2":
+                    _proxyType = ProxyType.Http;
+                    break;
+                case "3":
+                    _proxyType = ProxyType.Https;
+                    break;
+                default:
+                    _proxyType = ProxyType.Socks5;
+                    break;
+            }
+
+            Console.Write("代理服务器地址 (默认: 127.0.0.1): ");
             string? host = Console.ReadLine();
             if (!string.IsNullOrWhiteSpace(host))
             {
-                _socks5Host = host;
+                _proxyHost = host;
             }
 
-            Console.Write("Proxy Port (default: 1080): ");
+            Console.Write("代理服务器端口 (默认: 1080): ");
             string? portStr = Console.ReadLine();
             if (!string.IsNullOrWhiteSpace(portStr) && int.TryParse(portStr, out int port))
             {
-                _socks5Port = port;
+                _proxyPort = port;
             }
 
-            Console.Write("Username (leave empty for no authentication): ");
+            Console.Write("用户名 (留空表示不需要认证): ");
             string? username = Console.ReadLine();
             if (!string.IsNullOrWhiteSpace(username))
             {
-                _socks5Username = username;
+                _proxyUsername = username;
 
-                Console.Write("Password: ");
+                Console.Write("密码: ");
                 string? password = Console.ReadLine();
-                _socks5Password = password;
+                _proxyPassword = password;
             }
 
-            Console.Write("Handle ICMP traffic (ping) through SOCKS5? (y/n, default: n): ");
-            string? handleIcmp = Console.ReadLine()?.ToLower();
-            _handleIcmp = handleIcmp == "y" || handleIcmp == "yes";
-
-            Console.WriteLine($"SOCKS5 Proxy configured: {_socks5Host}:{_socks5Port}");
-            if (_socks5Username != null)
+            if (_proxyType == ProxyType.Socks5)
             {
-                Console.WriteLine($"Authentication: Username={_socks5Username}");
+                Console.Write("是否通过SOCKS5处理ICMP流量 (ping)? (y/n, 默认: n): ");
+                string? handleIcmp = Console.ReadLine()?.ToLower();
+                _handleIcmp = handleIcmp == "y" || handleIcmp == "yes";
             }
             else
             {
-                Console.WriteLine("Authentication: None");
+                // HTTP/HTTPS代理不支持ICMP
+                _handleIcmp = false;
             }
-            Console.WriteLine($"Handle ICMP traffic: {(_handleIcmp ? "Yes" : "No")}");
+
+            // 配置排除的IP地址
+            ConfigureExcludedIPs();
+
+            // 显示配置信息
+            string proxyTypeStr = "";
+            switch (_proxyType)
+            {
+                case ProxyType.Socks5:
+                    proxyTypeStr = "SOCKS5";
+                    break;
+                case ProxyType.Http:
+                    proxyTypeStr = "HTTP";
+                    break;
+                case ProxyType.Https:
+                    proxyTypeStr = "HTTPS";
+                    break;
+            }
+
+            Console.WriteLine($"{proxyTypeStr}代理已配置: {_proxyHost}:{_proxyPort}");
+            if (_proxyUsername != null)
+            {
+                Console.WriteLine($"认证方式: 用户名={_proxyUsername}");
+            }
+            else
+            {
+                Console.WriteLine("认证方式: 无");
+            }
+
+            if (_proxyType == ProxyType.Socks5)
+            {
+                Console.WriteLine($"处理ICMP流量: {(_handleIcmp ? "是" : "否")}");
+            }
+
+            if (_excludedIPs.Count > 0)
+            {
+                Console.WriteLine($"排除的IP地址: {string.Join(", ", _excludedIPs)}");
+            }
         }
 
         /// <summary>
-        /// 处理数据包并通过SOCKS5代理转发
+        /// 处理数据包并通过代理转发（支持SOCKS5/HTTP/HTTPS）
         /// </summary>
-        static void ProcessPacketForSocks5(byte[] packet, SharpTun.Interface.ITunSession session)
+        static void ProcessPacketForProxy(byte[] packet, SharpTun.Interface.ITunSession session)
         {
             if (packet.Length < 20)
             {
@@ -203,7 +416,7 @@ namespace SharpTunTest
             int version = packet[0] >> 4;
             if (version != 4) // 目前只处理IPv4
             {
-                Console.WriteLine("Skipping non-IPv4 packet");
+                Console.WriteLine("跳过非IPv4数据包");
                 return;
             }
 
@@ -215,12 +428,12 @@ namespace SharpTunTest
                 if (protocol == 1 && _handleIcmp) // ICMP
                 {
                     // 允许处理ICMP
-                    Console.WriteLine("Processing ICMP packet");
+                    Console.WriteLine("正在处理ICMP数据包");
                 }
                 else
                 {
                     // 对于其他协议，我们选择忽略
-                    Console.WriteLine($"Skipping non-TCP/UDP/ICMP packet (protocol: {protocol})");
+                    Console.WriteLine($"跳过非TCP/UDP/ICMP数据包 (协议: {protocol})");
                     return;
                 }
             }
@@ -257,20 +470,47 @@ namespace SharpTunTest
                 // 检查连接是否已存在
                 if (!_connectionTable.TryGetValue(connectionId, out Socket? proxySocket))
                 {
-                    // 创建新的SOCKS5连接
+                    // 创建新的代理连接
                     if (protocol == 1) // ICMP
                     {
-                        Console.WriteLine($"Creating new SOCKS5 connection for ICMP to {destIP}");
-                        // 对于ICMP，我们使用一个特殊端口（例如7）来创建SOCKS5连接
-                        // 实际上，SOCKS5代理通常不直接支持ICMP，这里是一个变通方法
-                        Socks5Client socks5Client = new Socks5Client(_socks5Host, _socks5Port, _socks5Username, _socks5Password);
-                        proxySocket = socks5Client.CreateConnection(destIP.ToString(), 7); // 使用echo端口
+                        // ICMP只能通过SOCKS5代理转发
+                        if (_proxyType == ProxyType.Socks5 && _handleIcmp)
+                        {
+                            Console.WriteLine($"正在为ICMP创建新的SOCKS5连接到 {destIP}");
+                            // 对于ICMP，我们使用一个特殊端口（例如7）来创建SOCKS5连接
+                            // 实际上，SOCKS5代理通常不直接支持ICMP，这里是一个变通方法
+                            Socks5Client socks5Client = new Socks5Client(_proxyHost, _proxyPort, _proxyUsername, _proxyPassword);
+                            proxySocket = socks5Client.CreateConnection(destIP.ToString(), 7); // 使用echo端口
+                        }
+                        else
+                        {
+                            Console.WriteLine($"跳过ICMP数据包，因为当前代理类型不支持ICMP");
+                            return;
+                        }
                     }
                     else
                     {
-                        Console.WriteLine($"Creating new SOCKS5 connection to {destIP}:{destPort}");
-                        Socks5Client socks5Client = new Socks5Client(_socks5Host, _socks5Port, _socks5Username, _socks5Password);
-                        proxySocket = socks5Client.CreateConnection(destIP.ToString(), destPort);
+                        // TCP/UDP可以通过任何类型的代理转发
+                        switch (_proxyType)
+                        {
+                            case ProxyType.Socks5:
+                                Console.WriteLine($"正在创建新的SOCKS5连接到 {destIP}:{destPort}");
+                                Socks5Client socks5Client = new Socks5Client(_proxyHost, _proxyPort, _proxyUsername, _proxyPassword);
+                                proxySocket = socks5Client.CreateConnection(destIP.ToString(), destPort);
+                                break;
+
+                            case ProxyType.Http:
+                                Console.WriteLine($"正在创建新的HTTP代理连接到 {destIP}:{destPort}");
+                                HttpProxyClient httpClient = new HttpProxyClient(_proxyHost, _proxyPort, false, _proxyUsername, _proxyPassword);
+                                proxySocket = httpClient.CreateConnection(destIP.ToString(), destPort);
+                                break;
+
+                            case ProxyType.Https:
+                                Console.WriteLine($"正在创建新的HTTPS代理连接到 {destIP}:{destPort}");
+                                HttpProxyClient httpsClient = new HttpProxyClient(_proxyHost, _proxyPort, true, _proxyUsername, _proxyPassword);
+                                proxySocket = httpsClient.CreateConnection(destIP.ToString(), destPort);
+                                break;
+                        }
                     }
 
                     // 添加到连接表
@@ -311,7 +551,7 @@ namespace SharpTunTest
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error forwarding packet to SOCKS5: {ex.Message}");
+                Console.WriteLine($"转发数据包到SOCKS5时出错: {ex.Message}");
                 // 移除失败的连接
                 if (_connectionTable.ContainsKey(connectionId))
                 {
@@ -349,7 +589,7 @@ namespace SharpTunTest
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Error in receive thread: {ex.Message}");
+                    Console.WriteLine($"接收线程错误: {ex.Message}");
                 }
                 finally
                 {
@@ -549,7 +789,7 @@ namespace SharpTunTest
         {
             if (packet.Length < 20)
             {
-                Console.WriteLine($"Received packet too short: {packet.Length} bytes");
+                Console.WriteLine($"收到的数据包太短: {packet.Length} 字节");
                 return;
             }
 
@@ -567,37 +807,37 @@ namespace SharpTunTest
 
                 string protocolName = GetProtocolName(protocol);
 
-                Console.WriteLine($"IPv4 Packet: {sourceIP} -> {destIP}, Protocol: {protocolName}, Length: {packet.Length} bytes");
+                Console.WriteLine($"IPv4数据包: {sourceIP} -> {destIP}, 协议: {protocolName}, 长度: {packet.Length} 字节");
 
                 // 如果是ICMP，显示更多信息
                 if (protocol == 1) // ICMP
                 {
                     byte type = packet[20];
                     byte code = packet[21];
-                    Console.WriteLine($"  ICMP Type: {type}, Code: {code}");
+                    Console.WriteLine($"  ICMP类型: {type}, 代码: {code}");
                 }
                 // 如果是TCP，显示端口信息
                 else if (protocol == 6) // TCP
                 {
                     int sourcePort = (packet[20] << 8) | packet[21];
                     int destPort = (packet[22] << 8) | packet[23];
-                    Console.WriteLine($"  TCP Ports: {sourcePort} -> {destPort}");
+                    Console.WriteLine($"  TCP端口: {sourcePort} -> {destPort}");
                 }
                 // 如果是UDP，显示端口信息
                 else if (protocol == 17) // UDP
                 {
                     int sourcePort = (packet[20] << 8) | packet[21];
                     int destPort = (packet[22] << 8) | packet[23];
-                    Console.WriteLine($"  UDP Ports: {sourcePort} -> {destPort}");
+                    Console.WriteLine($"  UDP端口: {sourcePort} -> {destPort}");
                 }
             }
             else if (version == 6) // IPv6
             {
-                Console.WriteLine($"IPv6 Packet: Length: {packet.Length} bytes");
+                Console.WriteLine($"IPv6数据包: 长度: {packet.Length} 字节");
             }
             else
             {
-                Console.WriteLine($"Unknown IP version: {version}, Length: {packet.Length} bytes");
+                Console.WriteLine($"未知IP版本: {version}, 长度: {packet.Length} 字节");
             }
         }
 
@@ -617,6 +857,318 @@ namespace SharpTunTest
                 case 58: return "ICMPv6";
                 default: return protocol.ToString();
             }
+        }
+
+        /// <summary>
+        /// 配置排除的IP地址
+        /// </summary>
+        static void ConfigureExcludedIPs()
+        {
+            Console.WriteLine("\n排除特定IP地址配置");
+            Console.WriteLine("-------------------------");
+            Console.WriteLine("您可以指定一些不通过虚拟适配器路由的IP地址，例如服务器的IP地址。");
+            Console.WriteLine("这将确保这些地址的流量不会通过SOCKS5代理转发。");
+            Console.WriteLine("输入多个IP地址时请用逗号分隔，或者留空不排除任何IP。");
+
+            Console.Write("要排除的IP地址: ");
+            string? excludedIPsStr = Console.ReadLine();
+
+            if (!string.IsNullOrWhiteSpace(excludedIPsStr))
+            {
+                // 清空当前列表
+                _excludedIPs.Clear();
+
+                // 分割并添加IP地址
+                string[] ips = excludedIPsStr.Split(new char[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (string ip in ips)
+                {
+                    string trimmedIP = ip.Trim();
+                    if (IPAddress.TryParse(trimmedIP, out _))
+                    {
+                        _excludedIPs.Add(trimmedIP);
+                    }
+                    else
+                    {
+                        Console.WriteLine($"警告: '{trimmedIP}' 不是有效的IP地址，已忽略。");
+                    }
+                }
+
+                // 自动添加代理服务器的IP地址
+                IPAddress proxyIP = GetProxyServerIP(_proxyHost);
+                string proxyIPStr = proxyIP.ToString();
+
+                if (!_excludedIPs.Contains(proxyIPStr))
+                {
+                    _excludedIPs.Add(proxyIPStr);
+                    Console.WriteLine($"自动添加代理服务器IP {proxyIPStr} 到排除列表。");
+                }
+            }
+            else
+            {
+                // 如果用户没有输入任何IP，自动添加代理服务器的IP
+                _excludedIPs.Clear();
+                IPAddress proxyIP = GetProxyServerIP(_proxyHost);
+                _excludedIPs.Add(proxyIP.ToString());
+                Console.WriteLine($"已自动添加代理服务器IP {proxyIP} 到排除列表。");
+            }
+        }
+
+        /// <summary>
+        /// 获取代理服务器的IP地址
+        /// </summary>
+        static IPAddress GetProxyServerIP(string hostname)
+        {
+            try
+            {
+                // 尝试直接解析为IP地址
+                if (IPAddress.TryParse(hostname, out IPAddress? ipAddress))
+                {
+                    return ipAddress;
+                }
+
+                // 如果是域名，进行域名解析
+                IPHostEntry hostEntry = Dns.GetHostEntry(hostname);
+                if (hostEntry.AddressList.Length > 0)
+                {
+                    // 优先返回IPv4地址
+                    foreach (IPAddress addr in hostEntry.AddressList)
+                    {
+                        if (addr.AddressFamily == AddressFamily.InterNetwork)
+                        {
+                            return addr;
+                        }
+                    }
+
+                    // 如果没有IPv4地址，返回第一个地址
+                    return hostEntry.AddressList[0];
+                }
+
+                // 如果解析失败，返回回环地址
+                Console.WriteLine($"警告: 无法解析主机名 {hostname}, 使用回环地址");
+                return IPAddress.Loopback;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"解析代理主机名时出错: {ex.Message}");
+                return IPAddress.Loopback;
+            }
+        }
+
+        /// <summary>
+        /// 获取默认网关IP地址
+        /// </summary>
+        static IPAddress? GetDefaultGateway()
+        {
+            try
+            {
+                // 获取所有网络接口
+                NetworkInterface[] interfaces = NetworkInterface.GetAllNetworkInterfaces();
+
+                foreach (NetworkInterface ni in interfaces)
+                {
+                    // 只考虑正常工作的接口
+                    if (ni.OperationalStatus != OperationalStatus.Up)
+                        continue;
+
+                    // 跳过回环接口和虚拟接口
+                    if (ni.NetworkInterfaceType == NetworkInterfaceType.Loopback ||
+                        ni.Description.Contains("Virtual") ||
+                        ni.Description.Contains("Pseudo"))
+                        continue;
+
+                    // 获取接口的网关地址
+                    IPInterfaceProperties ipProps = ni.GetIPProperties();
+                    GatewayIPAddressInformationCollection gateways = ipProps.GatewayAddresses;
+
+                    if (gateways.Count > 0)
+                    {
+                        foreach (GatewayIPAddressInformation gateway in gateways)
+                        {
+                            // 只返回IPv4网关
+                            if (gateway.Address.AddressFamily == AddressFamily.InterNetwork)
+                            {
+                                return gateway.Address;
+                            }
+                        }
+                    }
+                }
+
+                Console.WriteLine("警告: 无法找到默认网关");
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"查找默认网关时出错: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 配置网络适配器的IP地址
+        /// </summary>
+        static bool ConfigureAdapterIP(string adapterName, string ipAddress, string subnetMask)
+        {
+            try
+            {
+                // 使用netsh命令配置IP地址
+                ProcessStartInfo psi = new ProcessStartInfo("netsh", $"interface ip set address name=\"{adapterName}\" static {ipAddress} {subnetMask}");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+
+                using (Process process = Process.Start(psi))
+                {
+                    if (process != null)
+                    {
+                        process.WaitForExit();
+                        return process.ExitCode == 0;
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"配置适配器IP时出错: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 添加路由
+        /// </summary>
+        static bool AddRoute(string destination, string mask, string gateway)
+        {
+            try
+            {
+                // 使用route命令添加路由
+                ProcessStartInfo psi = new ProcessStartInfo("route", $"add {destination} mask {mask} {gateway}");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+
+                using (Process process = Process.Start(psi))
+                {
+                    if (process != null)
+                    {
+                        process.WaitForExit();
+                        bool success = process.ExitCode == 0;
+
+                        // 如果成功，添加到路由跟踪列表
+                        if (success)
+                        {
+                            _addedRoutes.Add((destination, mask));
+                        }
+
+                        return success;
+                    }
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"添加路由时出错: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 清理添加的路由
+        /// </summary>
+        static void CleanupRoutes()
+        {
+            if (_addedRoutes.Count == 0)
+            {
+                return;
+            }
+
+            Console.WriteLine($"正在删除 {_addedRoutes.Count} 条路由...");
+
+            foreach (var route in _addedRoutes)
+            {
+                try
+                {
+                    string destination = route.destination;
+                    string mask = route.mask;
+
+                    Console.WriteLine($"删除路由: {destination} mask {mask}");
+
+                    // 使用route命令删除路由
+                    ProcessStartInfo psi = new ProcessStartInfo("route", $"delete {destination} mask {mask}");
+                    psi.CreateNoWindow = true;
+                    psi.UseShellExecute = false;
+                    psi.RedirectStandardOutput = true;
+                    psi.RedirectStandardError = true;
+
+                    using (Process process = Process.Start(psi))
+                    {
+                        if (process != null)
+                        {
+                            process.WaitForExit();
+                            if (process.ExitCode != 0)
+                            {
+                                Console.WriteLine($"删除路由失败: {destination} mask {mask}");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"删除路由时出错: {ex.Message}");
+                }
+            }
+
+            // 清空路由列表
+            _addedRoutes.Clear();
+        }
+
+        /// <summary>
+        /// 重置适配器IP地址
+        /// </summary>
+        static void ResetAdapterIP()
+        {
+            if (string.IsNullOrEmpty(_configuredAdapterName))
+            {
+                return;
+            }
+
+            try
+            {
+                Console.WriteLine($"正在将适配器 '{_configuredAdapterName}' 重置为DHCP...");
+
+                // 使用netsh命令将适配器设置为DHCP
+                ProcessStartInfo psi = new ProcessStartInfo("netsh", $"interface ip set address name=\"{_configuredAdapterName}\" dhcp");
+                psi.CreateNoWindow = true;
+                psi.UseShellExecute = false;
+                psi.RedirectStandardOutput = true;
+                psi.RedirectStandardError = true;
+
+                using (Process process = Process.Start(psi))
+                {
+                    if (process != null)
+                    {
+                        process.WaitForExit();
+                        if (process.ExitCode != 0)
+                        {
+                            Console.WriteLine($"将适配器 '{_configuredAdapterName}' 重置为DHCP失败");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"适配器 '{_configuredAdapterName}' 已成功重置为DHCP");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"重置适配器IP时出错: {ex.Message}");
+            }
+
+            // 清空适配器名称
+            _configuredAdapterName = null;
         }
     }
 }
