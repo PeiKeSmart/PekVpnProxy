@@ -1,9 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.13.35931.197 d17.13
+VisualStudioVersion = 17.13.35931.197
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PekVpnProxy", "PekVpnProxy\PekVpnProxy.csproj", "{333AB770-8CB9-484B-920F-D81EE6EC4AB2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpTun", "SharpTun\SharpTun\SharpTun.csproj", "{E213523D-FAD2-D971-6413-61C11E6F7311}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpTunTest", "SharpTun\SharpTunTest\SharpTunTest.csproj", "{F7FFBBBD-7D3A-96B4-F481-B5ED1D509BF8}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +19,14 @@ Global
 		{333AB770-8CB9-484B-920F-D81EE6EC4AB2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{333AB770-8CB9-484B-920F-D81EE6EC4AB2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{333AB770-8CB9-484B-920F-D81EE6EC4AB2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E213523D-FAD2-D971-6413-61C11E6F7311}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E213523D-FAD2-D971-6413-61C11E6F7311}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E213523D-FAD2-D971-6413-61C11E6F7311}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E213523D-FAD2-D971-6413-61C11E6F7311}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F7FFBBBD-7D3A-96B4-F481-B5ED1D509BF8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F7FFBBBD-7D3A-96B4-F481-B5ED1D509BF8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F7FFBBBD-7D3A-96B4-F481-B5ED1D509BF8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F7FFBBBD-7D3A-96B4-F481-B5ED1D509BF8}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
