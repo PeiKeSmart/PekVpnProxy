@@ -1,5 +1,7 @@
 using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 
 namespace PekVpnProxy
@@ -14,7 +16,10 @@ namespace PekVpnProxy
         private readonly string? _username;
         private readonly string? _password;
         private TcpClient? _tcpClient;
-        private NetworkStream? _stream;
+        private NetworkStream? _networkStream;
+        private SslStream? _sslStream;
+        private Stream? _stream; // 当前使用的流（可能是NetworkStream或SslStream）
+        private bool _isSecure; // 是否使用SSL/TLS
 
         /// <summary>
         /// 初始化Socks5客户端
@@ -44,7 +49,9 @@ namespace PekVpnProxy
                 // 连接到Socks5代理服务器
                 _tcpClient = new TcpClient();
                 await _tcpClient.ConnectAsync(_proxyHost, _proxyPort);
-                _stream = _tcpClient.GetStream();
+                _networkStream = _tcpClient.GetStream();
+                _stream = _networkStream; // 初始化时使用NetworkStream
+                _isSecure = false;
 
                 // 进行Socks5握手
                 if (!await PerformHandshakeAsync())
@@ -61,6 +68,20 @@ namespace PekVpnProxy
                 }
 
                 Console.WriteLine($"成功通过Socks5代理连接到 {destinationHost}:{destinationPort}");
+
+                // 如果是HTTPS连接（端口443），升级到SSL/TLS
+                if (destinationPort == 443)
+                {
+                    if (await UpgradeToSslAsync(destinationHost))
+                    {
+                        Console.WriteLine($"成功升级到SSL/TLS加密连接");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"升级到SSL/TLS失败，使用非加密连接继续");
+                    }
+                }
+
                 return true;
             }
             catch (Exception ex)
@@ -129,14 +150,106 @@ namespace PekVpnProxy
         }
 
         /// <summary>
+        /// 升级到SSL/TLS加密连接
+        /// </summary>
+        /// <param name="targetHost">目标主机名（用于证书验证）</param>
+        /// <returns>升级成功返回true，否则返回false</returns>
+        private async Task<bool> UpgradeToSslAsync(string targetHost)
+        {
+            try
+            {
+                if (_networkStream == null || _tcpClient == null)
+                    return false;
+
+                // 创建SslStream，不验证服务器证书
+                _sslStream = new SslStream(_networkStream, false, new RemoteCertificateValidationCallback(ValidateServerCertificate));
+
+                // 设置TLS选项
+                var sslOptions = new SslClientAuthenticationOptions
+                {
+                    TargetHost = targetHost,
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12 | System.Security.Authentication.SslProtocols.Tls13,
+                    RemoteCertificateValidationCallback = ValidateServerCertificate
+                };
+
+                // 进行TLS握手
+                await _sslStream.AuthenticateAsClientAsync(sslOptions);
+
+                // 切换到加密流
+                _stream = _sslStream;
+                _isSecure = true;
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"SSL/TLS升级失败: {ex.Message}");
+                // 失败时回退到非加密流
+                _stream = _networkStream;
+                _isSecure = false;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 验证服务器证书
+        /// </summary>
+        private bool ValidateServerCertificate(object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors sslPolicyErrors)
+        {
+            // 为了测试目的，我们接受所有证书
+            // 在生产环境中应该进行适当的证书验证
+            return true;
+        }
+
+        /// <summary>
+        /// 获取连接状态信息
+        /// </summary>
+        /// <returns>连接状态信息</returns>
+        public string GetConnectionInfo()
+        {
+            if (_tcpClient == null || _stream == null)
+                return "未连接";
+
+            string secureStatus = _isSecure ? "SSL/TLS加密" : "非加密";
+            string protocol = _isSecure ? "HTTPS" : "HTTP";
+
+            if (_isSecure && _sslStream != null)
+            {
+                return $"{protocol} 连接 ({secureStatus}), 加密算法: {_sslStream.SslProtocol}, 加密强度: {_sslStream.CipherStrength} 位";
+            }
+
+            return $"{protocol} 连接 ({secureStatus})";
+        }
+
+        /// <summary>
         /// 断开连接
         /// </summary>
         public void Disconnect()
         {
-            _stream?.Close();
-            _tcpClient?.Close();
+            // 先关闭SSL流（如果存在）
+            if (_sslStream != null)
+            {
+                _sslStream.Close();
+                _sslStream = null;
+            }
+
+            // 关闭网络流
+            if (_networkStream != null)
+            {
+                _networkStream.Close();
+                _networkStream = null;
+            }
+
+            // 关闭TCP客户端
+            if (_tcpClient != null)
+            {
+                _tcpClient.Close();
+                _tcpClient = null;
+            }
+
+            // 重置引用
             _stream = null;
-            _tcpClient = null;
+            _isSecure = false;
         }
 
         /// <summary>

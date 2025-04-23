@@ -224,6 +224,13 @@ namespace PekVpnProxy
             if (!int.TryParse(destPortStr, out int destinationPort) || destinationPort <= 0 || destinationPort > 65535)
                 destinationPort = 80;
 
+            XTrace.WriteLine("请输入请求路径 (默认: /): ");
+            string requestPath = Console.ReadLine() ?? "/";
+            if (string.IsNullOrWhiteSpace(requestPath))
+                requestPath = "/";
+            if (!requestPath.StartsWith("/"))
+                requestPath = "/" + requestPath;
+
             XTrace.WriteLine("\n正在连接...");
 
             // 创建Socks5客户端并连接
@@ -238,13 +245,21 @@ namespace PekVpnProxy
                     if (destinationPort == 80 || destinationPort == 8080 || destinationPort == 443)
                     {
                         XTrace.WriteLine("\n发送HTTP GET请求...");
+                        // 准备HTTP请求
+                        string protocol = destinationPort == 443 ? "HTTPS" : "HTTP";
+                        XTrace.WriteLine($"使用{protocol}协议发送请求");
+                        XTrace.WriteLine($"连接状态: {socks5Client.GetConnectionInfo()}");
+
                         // 增加更多HTTP头部以提高兼容性
-                        string httpRequest = $"GET / HTTP/1.1\r\n" +
+                        string httpRequest = $"GET {requestPath} HTTP/1.1\r\n" +
                                            $"Host: {destinationHost}\r\n" +
                                            $"User-Agent: Mozilla/5.0 PekVpnProxy\r\n" +
                                            $"Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\n" +
                                            $"Accept-Language: zh-CN,zh;q=0.9,en;q=0.8\r\n" +
                                            $"Connection: close\r\n\r\n";
+                        XTrace.WriteLine($"请求URL: {protocol.ToLower()}://{destinationHost}{requestPath}");
+                        XTrace.WriteLine("请求头部:\n" + httpRequest);
+
                         byte[] requestData = Encoding.ASCII.GetBytes(httpRequest);
                         await socks5Client.SendAsync(requestData);
 
