@@ -121,7 +121,7 @@ namespace PekVpnProxy
             try
             {
                 // 使用超时任务
-                var readTask = _stream.ReadAsync(buffer);
+                var readTask = _stream.ReadAsync(buffer).AsTask(); // 将ValueTask<int>转换为Task<int>
 
                 // 等待读取完成或超时
                 if (await Task.WhenAny(readTask, Task.Delay(timeout)) == readTask)
@@ -278,7 +278,7 @@ namespace PekVpnProxy
 
             // 接收握手响应
             byte[] handshakeResponse = new byte[2];
-            int bytesRead = await _stream.ReadAsync(handshakeResponse, 0, 2);
+            int bytesRead = await _stream.ReadAsync(handshakeResponse, 0, 2).ConfigureAwait(false);
             if (bytesRead < 2 || handshakeResponse[0] != 0x05)
             {
                 Console.WriteLine("无效的Socks5握手响应");
@@ -326,7 +326,7 @@ namespace PekVpnProxy
 
             // 接收认证响应
             byte[] authResponse = new byte[2];
-            int bytesRead = await _stream.ReadAsync(authResponse, 0, 2);
+            int bytesRead = await _stream.ReadAsync(authResponse, 0, 2).ConfigureAwait(false);
             if (bytesRead < 2 || authResponse[0] != 0x01)
             {
                 Console.WriteLine("无效的认证响应");
@@ -404,7 +404,7 @@ namespace PekVpnProxy
 
             // 接收连接响应
             byte[] responseHeader = new byte[4];
-            int bytesRead = await _stream.ReadAsync(responseHeader, 0, 4);
+            int bytesRead = await _stream.ReadAsync(responseHeader, 0, 4).ConfigureAwait(false);
             if (bytesRead < 4 || responseHeader[0] != 0x05)
             {
                 Console.WriteLine("无效的Socks5连接响应");
@@ -443,7 +443,7 @@ namespace PekVpnProxy
             if (remainingBytes > 0)
             {
                 byte[] remainingData = new byte[remainingBytes];
-                await _stream.ReadAsync(remainingData, 0, remainingBytes);
+                await _stream.ReadAsync(remainingData, 0, remainingBytes).ConfigureAwait(false);
             }
 
             return true;

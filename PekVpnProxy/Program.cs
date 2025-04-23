@@ -239,6 +239,9 @@ namespace PekVpnProxy
 
             if (connected)
             {
+                // 声明在try块外部，以便在finally块中可以访问
+                bool isChunked = false;
+
                 try
                 {
                     // 如果连接成功，发送一个HTTP GET请求（假设目标是HTTP服务器）
@@ -270,7 +273,6 @@ namespace PekVpnProxy
                         int bytesRead;
                         bool headerReceived = false;
                         int contentLength = -1;
-                        bool isChunked = false;
 
                         // 循环读取直到没有更多数据或连接关闭
                         int consecutiveTimeouts = 0;
