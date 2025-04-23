@@ -1,5 +1,6 @@
 ﻿using NewLife.Log;
 using System.Text;
+using SharpTunTest;
 
 namespace PekVpnProxy
 {

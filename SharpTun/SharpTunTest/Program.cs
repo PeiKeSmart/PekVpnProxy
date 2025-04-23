@@ -13,7 +13,8 @@ namespace SharpTunTest
         enum TestMode
         {
             CaptureOnly,      // 仅捕获流量
-            Socks5Proxy       // SOCKS5代理转发
+            Socks5Proxy,      // SOCKS5代理转发
+            Socks5ClientTest  // 测试UnifiedSocks5Client
         }
 
         // 代理类型
@@ -52,7 +53,8 @@ namespace SharpTunTest
             Console.WriteLine("选择测试模式：");
             Console.WriteLine("1. 仅捕获 - 只捕获并显示网络数据包");
             Console.WriteLine("2. 代理转发 - 捕获数据包并通过代理转发（支持SOCKS5/HTTP/HTTPS）");
-            Console.Write("请输入您的选择 (1-2): ");
+            Console.WriteLine("3. 测试Socks5Client - 测试与PekVpnProxy的兼容性");
+            Console.Write("请输入您的选择 (1-3): ");
 
             TestMode mode = TestMode.CaptureOnly;
             string? choice = Console.ReadLine();
@@ -60,6 +62,13 @@ namespace SharpTunTest
             {
                 mode = TestMode.Socks5Proxy;
                 ConfigureSocks5Proxy();
+            }
+            else if (choice == "3")
+            {
+                mode = TestMode.Socks5ClientTest;
+                // 运行Socks5Client测试
+                await Socks5ClientTest.RunTest();
+                return; // 测试完成后直接返回
             }
 
             // 创建一个唯一的GUID用于适配器

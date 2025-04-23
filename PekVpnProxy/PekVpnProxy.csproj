@@ -9,6 +9,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="..\SharpTun\SharpTunTest\Socks5Client.cs" Link="Socks5Client.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="Microsoft.VisualStudio.Azure.Containers.Tools.Targets" Version="1.21.2" />
     <PackageReference Include="Pek.Common" Version="4.11.2025.415-beta0728" />
   </ItemGroup>
